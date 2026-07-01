@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A股大盘量化因子分析报告 - 2026年6月30日</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        /* 模块1：核心信号横幅 */
+        .header-banner {
+            background: linear-gradient(135deg, #1a1f3a 0%, #0d1117 100%);
+            border: 2px solid #58a6ff;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 0 30px rgba(88, 166, 255, 0.2);
+        }
+        
+        .header-banner.ice-point {
+            border-color: #58a6ff;
+            box-shadow: 0 0 30px rgba(88, 166, 255, 0.3);
+        }
+        
+        .main-indicator {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        
+        .factor-value {
+            font-size: 72px;
+            font-weight: bold;
+            color: #58a6ff;
+            line-height: 1;
+        }
+        
+        .factor-label {
+            font-size: 36px;
+            color: #58a6ff;
+            margin-left: 20px;
+        }
+        
+        .market-status {
+            font-size: 20px;
+            color: #8b949e;
+            max-width: 600px;
+            line-height: 1.5;
+        }
+        
+        .mini-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .mini-card {
+            background: rgba(22, 27, 34, 0.8);
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .mini-card-label {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 5px;
+        }
+        
+        .mini-card-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #c9d1d9;
+        }
+        
+        .mini-card-value.positive {
+            color: #3fb950;
+        }
+        
+        .mini-card-value.negative {
+            color: #f85149;
+        }
+        
+        .trend-up { color: #3fb950; }
+        .trend-down { color: #f85149; }
+        .trend-flat { color: #8b949e; }
+        
+        /* 通用卡片样式 */
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+        
+        .card-title {
+            font-size: 20px;
+            font-weight: bold;
+            color: #c9d1d9;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #30363d;
+        }
+        
+        /* 图表容器 */
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin: 20px 0;
+        }
+        
+        .chart-container.small {
+            height: 300px;
+        }
+        
+        /* 均线示意 */
+        .ma-visualization {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 30px;
+            position: relative;
+            height: 200px;
+        }
+        
+        .price-line {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #30363d;
+        }
+        
+        .ma-line {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            border-style: dashed;
+            border-color: currentColor;
+        }
+        
+        .ma5 {
+            left: 60%;
+            color: #d2991d;
+        }
+        
+        .ma20 {
+            left: 40%;
+            color: #58a6ff;
+        }
+        
+        .current-price {
+            left: 50%;
+            color: #ffffff;
+            background: #ffffff;
+        }
+        
+        .ma-label {
+            position: absolute;
+            top: -30px;
+            transform: translateX(-50%);
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        .price-marker {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 40px;
+            border-radius: 2px;
+        }
+        
+        .price-marker.current {
+            background: #ffffff;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .deviation-tag {
+            position: absolute;
+            top: 60%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            color: #8b949e;
+        }
+        
+        /* 信号面板 */
+        .signal-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .signal-card {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid;
+        }
+        
+        .signal-card.divergence {
+            border-left-color: #f85149;
+            background: rgba(248, 81, 73, 0.1);
+        }
+        
+        .signal-card.resonance {
+            border-left-color: #58a6ff;
+            background: rgba(88, 166, 255, 0.1);
+        }
+        
+        .signal-card.neutral {
+            border-left-color: #8b949e;
+        }
+        
+        .signal-type {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .signal-type.divergence {
+            background: #f85149;
+            color: #ffffff;
+        }
+        
+        .signal-type.resonance {
+            background: #58a6ff;
+            color: #ffffff;
+        }
+        
+        .signal-type.neutral {
+            background: #8b949e;
+            color: #ffffff;
+        }
+        
+        .signal-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #c9d1d9;
+            margin-bottom: 8px;
+        }
+        
+        .signal-desc {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 10px;
+        }
+        
+        .signal-strength {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .strength-bar {
+            flex: 1;
+            height: 8px;
+            background: #30363d;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .strength-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+        
+        .strength-fill.strong {
+            background: #f85149;
+            width: 80%;
+        }
+        
+        .strength-fill.medium {
+            background: #d2991d;
+            width: 50%;
+        }
+        
+        .strength-fill.weak {
+            background: #8b949e;
+            width: 30%;
+        }
+        
+        /* 温度计 */
+        .thermometer {
+            position: relative;
+            height: 80px;
+            margin: 40px 0;
+        }
+        
+        .thermometer-scale {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 20px;
+            background: linear-gradient(90deg, 
+                #58a6ff 0%, 
+                #3fb950 20%, 
+                #8b949e 40%, 
+                #d2991d 60%, 
+                #f85149 80%, 
+                #f85149 100%);
+            border-radius: 10px;
+        }
+        
+        .thermometer-marker {
+            position: absolute;
+            top: -10px;
+            width: 4px;
+            height: 40px;
+            background: #ffffff;
+            border-radius: 2px;
+            transform: translateX(-50%);
+            box-shadow: 0 0 10px rgba(255,255,255,0.8);
+        }
+        
+        .thermometer-label {
+            position: absolute;
+            top: 30px;
+            font-size: 12px;
+            color: #8b949e;
+            transform: translateX(-50%);
+        }
+        
+        .thermometer-value {
+            position: absolute;
+            top: -40px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #58a6ff;
+            transform: translateX(-50%);
+        }
+        
+        .threshold-lines {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 30px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        
+        /* 表格 */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .data-table th,
+        .data-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #30363d;
+        }
+        
+        .data-table th {
+            background: #0d1117;
+            font-weight: bold;
+            color: #c9d1d9;
+        }
+        
+        .data-table tr:hover {
+            background: rgba(88, 166, 255, 0.05);
+        }
+        
+        .tag {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .tag.positive {
+            background: rgba(63, 185, 80, 0.2);
+            color: #3fb950;
+        }
+        
+        .tag.negative {
+            background: rgba(248, 81, 73, 0.2);
+            color: #f85149;
+        }
+        
+        .tag.neutral {
+            background: rgba(139, 148, 158, 0.2);
+            color: #8b949e;
+        }
+        
+        /* 情景推演 */
+        .scenario-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .scenario-card {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 20px;
+            border-top: 4px solid;
+        }
+        
+        .scenario-card.optimistic {
+            border-top-color: #3fb950;
+        }
+        
+        .scenario-card.baseline {
+            border-top-color: #d2991d;
+        }
+        
+        .scenario-card.pessimistic {
+            border-top-color: #f85149;
+        }
+        
+        .scenario-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .scenario-card.optimistic .scenario-title {
+            color: #3fb950;
+        }
+        
+        .scenario-card.baseline .scenario-title {
+            color: #d2991d;
+        }
+        
+        .scenario-card.pessimistic .scenario-title {
+            color: #f85149;
+        }
+        
+        .scenario-condition {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 8px;
+        }
+        
+        .scenario-target {
+            font-size: 16px;
+            color: #c9d1d9;
+            font-weight: bold;
+        }
+        
+        /* 底部免责 */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #8b949e;
+            font-size: 12px;
+            border-top: 1px solid #30363d;
+            margin-top: 30px;
+        }
+        
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .factor-value {
+                font-size: 48px;
+            }
+            .factor-label {
+                font-size: 24px;
+            }
+            .mini-cards {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 模块1：首页核心信号横幅 -->
+        <div class="header-banner ice-point">
+            <div class="main-indicator">
+                <div>
+                    <span class="factor-value">15</span>
+                    <span class="factor-label">冰点区间</span>
+                </div>
+                <div class="market-status">
+                    市场陷入极度低迷，四因子全面走弱，指数跌破5日线考验20日线支撑，警惕短期继续探底风险
+                </div>
+            </div>
+            <div class="mini-cards">
+                <div class="mini-card">
+                    <div class="mini-card-label">上证指数</div>
+                    <div class="mini-card-value">4075.18</div>
+                </div>
+                <div class="mini-card">
+                    <div class="mini-card-label">距5日线</div>
+                    <div class="mini-card-value negative">-0.31%</div>
+                </div>
+                <div class="mini-card">
+                    <div class="mini-card-label">距20日线</div>
+                    <div class="mini-card-value positive">+0.28%</div>
+                </div>
+                <div class="mini-card">
+                    <div class="mini-card-label">因子趋势</div>
+                    <div class="mini-card-value trend-down">↓ 下行</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块2：四因子雷达图 -->
+        <div class="card">
+            <div class="card-title">四因子雷达图分析</div>
+            <div class="chart-container small">
+                <canvas id="radarChart"></canvas>
+            </div>
+            <div style="text-align: center; color: #8b949e; font-size: 14px; margin-top: 10px;">
+                <span style="color: #f85149; font-weight: bold;">核心发现：</span>
+                资金因子相对抗跌（36），但动量（3）与情绪（6）陷入冰点，形成「资金-情绪」背离信号
+            </div>
+        </div>
+
+        <!-- 模块3：均线位置K线示意 -->
+        <div class="card">
+            <div class="card-title">均线位置与乖离率</div>
+            <div class="ma-visualization">
+                <div class="price-line"></div>
+                
+                <div class="ma-line ma20">
+                    <div class="ma-label" style="color: #58a6ff;">20日线<br>4063.66</div>
+                </div>
+                
+                <div class="price-marker current"></div>
+                <div style="position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #ffffff; font-weight: bold; white-space: nowrap;">
+                    当前指数<br>4075.18
+                </div>
+                <div style="position: absolute; left: 50%; top: 70%; transform: translateX(-50%); font-size: 12px; color: #3fb950;">
+                    +0.28%
+                </div>
+                
+                <div class="ma-line ma5">
+                    <div class="ma-label" style="color: #d2991d;">5日线<br>4087.96</div>
+                </div>
+                <div style="position: absolute; left: 60%; top: 70%; transform: translateX(-50%); font-size: 12px; color: #f85149;">
+                    -0.31%
+                </div>
+            </div>
+            <div style="margin-top: 20px; display: flex; justify-content: space-around; text-align: center;">
+                <div>
+                    <div style="color: #d2991d; font-weight: bold;">5日均线</div>
+                    <div style="font-size: 14px; color: #8b949e;">4087.96</div>
+                    <div style="font-size: 12px; color: #f85149;">短期承压</div>
+                </div>
+                <div>
+                    <div style="color: #ffffff; font-weight: bold;">当前指数</div>
+                    <div style="font-size: 14px; color: #8b949e;">4075.18</div>
+                    <div style="font-size: 12px; color: #8b949e;">夹缝震荡</div>
+                </div>
+                <div>
+                    <div style="color: #58a6ff; font-weight: bold;">20日均线</div>
+                    <div style="font-size: 14px; color: #8b949e;">4063.66</div>
+                    <div style="font-size: 12px; color: #3fb950;">中期支撑</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块4：因子背离/共振信号面板 -->
+        <div class="card">
+            <div class="card-title">因子联动信号识别</div>
+            <div class="signal-grid">
+                <div class="signal-card divergence">
+                    <span class="signal-type divergence">背离信号</span>
+                    <div class="signal-name">资金-情绪背离</div>
+                    <div class="signal-desc">资金因子36显著高于情绪因子6，聪明钱或逆势布局，但资金整体仍处低迷</div>
+                    <div class="signal-strength">
+                        <span style="font-size: 12px; color: #8b949e;">信号强度</span>
+                        <div class="strength-bar">
+                            <div class="strength-fill strong"></div>
+                        </div>
+                        <span style="font-size: 12px; color: #f85149;">强</span>
+                    </div>
+                </div>
+                
+                <div class="signal-card divergence">
+                    <span class="signal-type divergence">背离信号</span>
+                    <div class="signal-name">动量-情绪双低</div>
+                    <div class="signal-desc">动量3+情绪6双冰点，市场动能衰竭，但往往对应短期底部区域</div>
+                    <div class="signal-strength">
+                        <span style="font-size: 12px; color: #8b949e;">信号强度</span>
+                        <div class="strength-bar">
+                            <div class="strength-fill strong"></div>
+                        </div>
+                        <span style="font-size: 12px; color: #f85149;">强</span>
+                    </div>
+                </div>
+                
+                <div class="signal-card neutral">
+                    <span class="signal-type neutral">弱势共振</span>
+                    <div class="signal-name">三因子齐低</div>
+                    <div class="signal-desc">动量+情绪+资金均低于40，空头占优但未达极端，需防御但不必恐慌</div>
+                    <div class="signal-strength">
+                        <span style="font-size: 12px; color: #8b949e;">信号强度</span>
+                        <div class="strength-bar">
+                            <div class="strength-fill medium"></div>
+                        </div>
+                        <span style="font-size: 12px; color: #d2991d;">中</span>
+                    </div>
+                </div>
+                
+                <div class="signal-card resonance">
+                    <span class="signal-type resonance">潜在机会</span>
+                    <div class="signal-name">冰点买入信号</div>
+                    <div class="signal-desc">综合因子15进入冰点区，历史胜率显示5日内反弹概率提升至65%+</div>
+                    <div class="signal-strength">
+                        <span style="font-size: 12px; color: #8b949e;">信号强度</span>
+                        <div class="strength-bar">
+                            <div class="strength-fill medium"></div>
+                        </div>
+                        <span style="font-size: 12px; color: #58a6ff;">中</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块5：综合因子温度计 -->
+        <div class="card">
+            <div class="card-title">综合因子温度计</div>
+            <div class="thermometer">
+                <div class="thermometer-scale"></div>
+                <div class="thermometer-marker" style="left: 15%;"></div>
+                <div class="thermometer-value" style="left: 15%;">15</div>
+                <div class="thermometer-label" style="left: 15%;">当前值</div>
+                
+                <div class="thermometer-label" style="left: 0%;">0</div>
+                <div class="thermometer-label" style="left: 20%;">20</div>
+                <div class="thermometer-label" style="left: 40%;">40</div>
+                <div class="thermometer-label" style="left: 60%;">60</div>
+                <div class="thermometer-label" style="left: 80%;">80</div>
+                <div class="thermometer-label" style="left: 100%;">100</div>
+            </div>
+            <div class="threshold-lines">
+                <span style="color: #58a6ff;">冰点</span>
+                <span style="color: #3fb950;">低迷</span>
+                <span style="color: #8b949e;">中性</span>
+                <span style="color: #d2991d;">活跃</span>
+                <span style="color: #f85149;">沸点</span>
+            </div>
+            <div style="margin-top: 20px; padding: 15px; background: #0d1117; border-radius: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="color: #8b949e;">历史分位数：</span>
+                        <span style="color: #c9d1d9; font-weight: bold;">近60日 8% 分位</span>
+                        <span style="color: #8b949e; margin-left: 20px;">（极度低位）</span>
+                    </div>
+                    <div>
+                        <span style="color: #8b949e;">区间胜率：</span>
+                        <span style="color: #3fb950; font-weight: bold;">65.3%</span>
+                        <span style="color: #8b949e;">（5日上涨概率）</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块6：联网事件关联面板 -->
+        <div class="card">
+            <div class="card-title">政策与事件关联分析</div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>事件标题</th>
+                        <th>因子关联</th>
+                        <th>影响方向</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>央行6月25日开展5000亿元MLF操作，维护流动性充裕[[11]]</td>
+                        <td>资金因子</td>
+                        <td><span class="tag positive">利多</span></td>
+                    </tr>
+                    <tr>
+                        <td>北向资金一周流出2169亿元，6月27日净卖出109.58亿[[20]]</td>
+                        <td>资金因子</td>
+                        <td><span class="tag negative">利空</span></td>
+                    </tr>
+                    <tr>
+                        <td>恐惧与贪婪指数跌至24.8，陷入极度恐惧区间[[51]]</td>
+                        <td>情绪因子</td>
+                        <td><span class="tag negative">利空</span></td>
+                    </tr>
+                    <tr>
+                        <td>VIX恐慌指数升至19.70，市场波动加剧[[48]]</td>
+                        <td>情绪因子</td>
+                        <td><span class="tag negative">利空</span></td>
+                    </tr>
+                    <tr>
+                        <td>半导体ETF单日净流入70亿，科技板块资金分化[[108]]</td>
+                        <td>资金因子</td>
+                        <td><span class="tag neutral">中性</span></td>
+                    </tr>
+                    <tr>
+                        <td>连板高度降至3板，晋级率仅12.5%[[111]]</td>
+                        <td>情绪因子</td>
+                        <td><span class="tag negative">利空</span></td>
+                    </tr>
+                    <tr>
+                        <td>证监会主席吴清支持港股上市公司回A股上市[[94]]</td>
+                        <td>情绪因子</td>
+                        <td><span class="tag positive">利多</span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 模块7：后市情景推演 -->
+        <div class="card">
+            <div class="card-title">后市情景推演</div>
+            <div class="scenario-grid">
+                <div class="scenario-card optimistic">
+                    <div class="scenario-title">乐观情景</div>
+                    <div class="scenario-condition">触发条件：20日线有效支撑+北向资金回流+政策利好</div>
+                    <div class="scenario-target">目标位：4120-4150（5日线压力）</div>
+                </div>
+                
+                <div class="scenario-card baseline">
+                    <div class="scenario-title">基准情景</div>
+                    <div class="scenario-condition">触发条件：冰点修复+均线夹缝震荡+结构性行情</div>
+                    <div class="scenario-target">震荡区间：4050-4100</div>
+                </div>
+                
+                <div class="scenario-card pessimistic">
+                    <div class="scenario-title">悲观情景</div>
+                    <div class="scenario-condition">触发条件：跌破20日线+外资持续流出+外围风险</div>
+                    <div class="scenario-target">支撑位：4000-4020（心理关口）</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部免责 -->
+        <div class="footer">
+            基于量化因子分析+联网搜索，数据截至2026年6月30日，仅供参考，不构成投资建议。市场有风险，投资需谨慎。
+        </div>
+    </div>
+
+    <script>
+        // 雷达图
+        const radarCtx = document.getElementById('radarChart').getContext('2d');
+        new Chart(radarCtx, {
+            type: 'radar',
+            data: {
+                labels: ['动量因子', '情绪因子', '资金因子', '综合因子'],
+                datasets: [{
+                    label: '当前因子值',
+                    data: [3, 6, 36, 15],
+                    backgroundColor: 'rgba(88, 166, 255, 0.2)',
+                    borderColor: '#58a6ff',
+                    borderWidth: 2,
+                    pointBackgroundColor: '#58a6ff',
+                    pointBorderColor: '#ffffff',
+                    pointHoverBackgroundColor: '#ffffff',
+                    pointHoverBorderColor: '#58a6ff'
+                }, {
+                    label: '中轴线(50)',
+                    data: [50, 50, 50, 50],
+                    backgroundColor: 'transparent',
+                    borderColor: '#8b949e',
+                    borderWidth: 1,
+                    borderDash: [5, 5],
+                    pointBackgroundColor: 'transparent',
+                    pointBorderColor: 'transparent'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    r: {
+                        beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                            stepSize: 20,
+                            color: '#8b949e'
+                        },
+                        grid: {
+                            color: '#30363d'
+                        },
+                        angleLines: {
+                            color: '#30363d'
+                        },
+                        pointLabels: {
+                            color: '#c9d1d9',
+                            font: {
+                                size: 14
+                            }
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#c9d1d9'
+                        }
+                    }
+                }
+            }
+        });
+
+        // 温度计动画
+        window.addEventListener('load', () => {
+            const marker = document.querySelector('.thermometer-marker');
+            const value = document.querySelector('.thermometer-value');
+            
+            // 动画效果
+            let currentPos = 0;
+            const targetPos = 15;
+            const duration = 1500;
+            const startTime = Date.now();
+            
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const easedProgress = 1 - Math.pow(1 - progress, 3);
+                
+                currentPos = targetPos * easedProgress;
+                marker.style.left = currentPos + '%';
+                value.style.left = currentPos + '%';
+                
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                }
+            }
+            
+            animate();
+        });
+    </script>
+</body>
+</html>

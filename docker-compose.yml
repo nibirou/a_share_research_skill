@@ -1,0 +1,7 @@
+services:
+  research-backend:
+    build: .
+    ports: ["8787:8787"]
+    env_file: [.env]
+    volumes:
+      - ./backend/app/static/reports:/app/backend/app/static/reports
