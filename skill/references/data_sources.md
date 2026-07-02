@@ -106,3 +106,21 @@ Every report should include a compact data audit section:
 - If a key field is missing for a stock, downgrade its recommendation priority.
 - If sector constituents differ across providers, prefer the taxonomy owner or the most mainstream market-data source, and disclose alternatives.
 - Do not cite single self-media posts as core evidence for policy, fundamentals, or announcements.
+
+## 2026-07-02 Provider Expansion
+
+This skill now has a concrete provider registry in `references/provider_registry.md` and a runnable probe script:
+
+```bash
+python scripts/probe_data_sources.py --samples
+```
+
+Newly integrated or documented provider channels:
+
+- XTick: local vendor skill under `xtick/`, with token configuration in `xtick/scripts/Config.py`; preferred Tier-1 source for realtime quote, K-line, index/ETF/HK/convertible bond, hot money, market emotion, indicators, and factors when permission allows.
+- Equal Data: configured through `EQUAL_DATA_API_KEY`; preferred for announcements, events, institutional holdings, LHB, insider changes, unlocks, SW industry, index constituents, and news.
+- mootdx/TDX: optional realtime/K-line/tick fallback; remember it uses six-digit TDX codes and excludes Beijing Stock Exchange stocks.
+- Direct Sina/THS/Eastmoney/CNINFO HTTP: used as low-friction cross-check and public fallback. Add source URL, retrieval time, and field definitions in every report.
+- SearchHub expansion: Tavily -> Serper -> SerpAPI -> Brave -> SearxNG. Use official and exchange/regulator sources before self-media when the topic is policy, announcements, fundamentals, or event risk.
+
+Do not commit secrets. `xtick/scripts/Config.py`, `.env`, `__pycache__/`, and `*.pyc` are ignored by Git.

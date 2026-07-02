@@ -21,8 +21,10 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8787 --reload
 - `skill/SKILL.md`：轻量入口与报告路由。
 - `skill/references/data_sources.md`：行情、资金、财务、公告、新闻数据源分层与审计规则。
 - `skill/references/agent_team.md`：多智能体投研角色、辩论流程与评分规则。
-- `skill/references/html_prompt_library.md`：现有功能优化版提示词与新增 HTML 报告提示词。
-- `docs/Prompt/FunctionPrompt.ipynb`：由提示词库同步生成的 notebook 版本。
+- `skill/references/html_prompt_library.md`：HTML 功能提示词索引，指向 Skill 内置提示词文件。
+- `skill/references/html_prompts/`：安装后可独立使用的 HTML 页面长提示词。
+- `docs/Prompt/HTMLFunctionPrompts/`：每个 HTML 页面功能一份独立长提示词 md 文件。
+- `docs/Prompt/FunctionPrompt.ipynb`：原始 notebook 提示词模板，保留作为对照来源。
 
 ## 当前可运行报告类型
 
@@ -30,6 +32,48 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8787 --reload
 - `quant_factor`：大盘量化因子 HTML
 - `sector_stock`：板块个股逐一分析 HTML
 - `agent_debate`：多智能体投研 HTML
+
+## 本地测试
+
+先安装依赖：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+检查 Python 语法：
+
+```bash
+python -m py_compile backend/app/main.py scripts/generate_once.py
+```
+
+生成单个页面：
+
+```bash
+python scripts/generate_once.py --report market_replay
+python scripts/generate_once.py --report sector_stock --sector 光伏设备
+```
+
+生成当前已接入后端的全部页面：
+
+```bash
+python scripts/generate_once.py --all
+```
+
+启动页面中心：
+
+```bash
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8787 --reload
+```
+
+打开 `http://127.0.0.1:8787` 查看报告列表。
+
+校验 Skill 结构时，如果 Windows 控制台遇到编码问题，先启用 UTF-8：
+
+```powershell
+$env:PYTHONUTF8='1'
+python C:\Users\74142\.codex\skills\.system\skill-creator\scripts\quick_validate.py skill
+```
 
 ## 已设计扩展报告类型
 
@@ -41,6 +85,58 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8787 --reload
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`
 - `TAVILY_API_KEY` / `SERPER_API_KEY` / `SEARXNG_URL`
 - `TUSHARE_TOKEN` / `XTICK_TOKEN`
+
+## 数据源扩展
+
+本项目已增加统一数据源注册表与探测脚本：
+
+```powershell
+python scripts\probe_data_sources.py
+python scripts\probe_data_sources.py --samples
+```
+
+当前纳入的渠道：
+
+- XTick：本地目录 `xtick/`，配置文件 `xtick/scripts/Config.py`，优先读取 `XTICK_TOKEN`。
+- Sina：指数实时行情兜底。
+- 同花顺：行业涨跌幅、行业成交额、行业净流入、行业上涨/下跌家数。
+- Equal Data：通过 `EQUAL_DATA_API_KEY` 预留，适合公告、机构、龙虎榜、解禁、增减持等事件源。
+- 搜索链：Tavily -> Serper -> SerpAPI -> Brave -> SearxNG。
+
+新增数据源路由说明见：
+
+- `skill/references/provider_registry.md`
+- `skill/references/data_sources.md`
+
+注意：不要提交 Token。`.env` 和 `xtick/scripts/Config.py` 已在 `.gitignore` 中忽略。
+
+## Skill 安装目录同步
+
+项目内源 skill 路径：
+
+```text
+D:\PythonProject\Quant\a_share_research_skill\skill
+```
+
+Codex 实际调用的安装目录：
+
+```text
+C:\Users\74142\.codex\skills\a-share-research-html
+```
+
+手动同步：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_skill.ps1
+```
+
+安装自动同步 Git hooks：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_skill_sync_hooks.ps1
+```
+
+已安装后，仓库执行 `git checkout`、`git merge`、`git rebase`/`git reset` 触发的 rewrite、`git commit`、`git am` 后，会自动调用 `scripts\sync_skill.ps1`，将 `skill/` 镜像到 Codex skill 安装目录。Hook 日志在 `.git/skill-sync.log`。
 
 ## 安全说明
 

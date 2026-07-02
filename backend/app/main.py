@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     tavily_api_key: str = ""
     serper_api_key: str = ""
+    serpapi_api_key: str = ""
+    brave_api_key: str = ""
     searxng_url: str = ""
     tushare_token: str = ""
     xtick_token: str = ""
@@ -303,6 +305,10 @@ class SearchHub:
                 out.extend(await self._tavily(q, days, limit))
             elif settings.serper_api_key:
                 out.extend(await self._serper(q, days, limit))
+            elif settings.serpapi_api_key:
+                out.extend(await self._serpapi(q, days, limit))
+            elif settings.brave_api_key:
+                out.extend(await self._brave(q, days, limit))
             elif settings.searxng_url:
                 out.extend(await self._searx(q, days, limit))
             if len(out) >= limit:
@@ -324,6 +330,38 @@ class SearchHub:
                 r = await client.post("https://google.serper.dev/news", headers={"X-API-KEY": settings.serper_api_key}, json={"q": q, "num": limit, "tbs": f"qdr:d{days}"})
                 r.raise_for_status()
                 return [self._from_result(x, "Serper") for x in r.json().get("news", [])]
+        except Exception:
+            return []
+
+    async def _serpapi(self, q: str, days: int, limit: int) -> list[MarketEvent]:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    "https://serpapi.com/search",
+                    params={
+                        "engine": "google_news",
+                        "q": q,
+                        "api_key": settings.serpapi_api_key,
+                        "hl": "zh-cn",
+                        "gl": "cn",
+                        "num": limit,
+                    },
+                )
+                r.raise_for_status()
+                return [self._from_result(x, "SerpAPI") for x in r.json().get("news_results", [])[:limit]]
+        except Exception:
+            return []
+
+    async def _brave(self, q: str, days: int, limit: int) -> list[MarketEvent]:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    "https://api.search.brave.com/res/v1/news/search",
+                    headers={"X-Subscription-Token": settings.brave_api_key},
+                    params={"q": q, "count": min(limit, 20)},
+                )
+                r.raise_for_status()
+                return [self._from_result(x, "Brave") for x in r.json().get("results", [])[:limit]]
         except Exception:
             return []
 
@@ -540,7 +578,19 @@ def render_sector(ss: SectorStockSnapshot, findings: list[AgentFinding]) -> str:
 
 def render_agents(findings: list[AgentFinding]) -> str:
     score = round(sum(f.score for f in findings)/len(findings), 1)
-    cards = "".join(f"<div class='card'><h2>{escape(f.role)}</h2><div class='num'>{f.score}</div><div class='sub'>{escape(f.verdict)}</div><div class='kv'>{''.join('<span class=\"pill\">'+escape(e)+'</span>' for e in f.evidence[:3])}</div></div>" for f in findings)
+    card_parts = []
+    for finding in findings:
+        evidence = "".join(
+            f"<span class='pill'>{escape(item)}</span>"
+            for item in finding.evidence[:3]
+        )
+        card_parts.append(
+            f"<div class='card'><h2>{escape(finding.role)}</h2>"
+            f"<div class='num'>{finding.score}</div>"
+            f"<div class='sub'>{escape(finding.verdict)}</div>"
+            f"<div class='kv'>{evidence}</div></div>"
+        )
+    cards = "".join(card_parts)
     risks = "".join(f"<tr><td>{escape(f.role)}</td><td>{escape('；'.join(f.risks) or '暂无')}</td></tr>" for f in findings)
     return head("A股多智能体投研报告") + f"<div class='banner section'><h1>多智能体投研结论</h1><div class='num'>{score}</div><div class='sub'>综合评分：>60偏机会，40-60中性，<40偏风险。</div></div><div class='grid g3 section'>{cards}</div><div class='card section'><h2>风险清单</h2><table><thead><tr><th>角色</th><th>风险</th></tr></thead><tbody>{risks}</tbody></table></div>" + foot()
 
