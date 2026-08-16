@@ -36,6 +36,17 @@ Use this reference whenever a report requires cross-validation, debate, or a fin
 5. **Risk Control And HTML QA**  
    Risk Analyst removes ST/*ST or delisting-risk names from recommendations, downgrades missing-data names, and verifies that the HTML includes source/audit notes and investment disclaimer.
 
+## Model Routing
+
+The multi-agent layer supports OpenAI-compatible custom model services.
+
+- User-specified model wins: `llm_base_url` + `llm_model`; `llm_api_key` is optional for local no-auth deployments and required only when the provider needs it.
+- Repository scripts and FastAPI then fall back to `.env` `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`.
+- If no external model is configured, use deterministic local rule agents so reports remain runnable offline.
+- In an interactive Codex conversation, if the user does not specify a custom model, use the current conversation model for reasoning and synthesis outside the backend.
+- Do not include API keys in HTML reports, logs, returned JSON, or final user-facing summaries.
+- Custom base URLs should be OpenAI-compatible and usually end with `/v1`; the backend appends `/chat/completions` when needed.
+
 ## Role Output Contract
 
 Each role should return compact structured findings before the final HTML is rendered:

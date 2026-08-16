@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>财报与催化日历</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <style>
+    :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--up:#f85149;--down:#3fb950;--blue:#58a6ff;--warn:#d29922}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:PingFang SC,Microsoft YaHei,Arial,sans-serif}
+    .wrap{max-width:1380px;margin:auto;padding:22px}.hero{border:1px solid var(--line);border-radius:8px;padding:20px;background:linear-gradient(135deg,rgba(88,166,255,.18),rgba(248,81,73,.08)),var(--panel)}
+    h1{margin:0;font-size:26px}h2{font-size:17px;margin:0 0 10px}p{line-height:1.7;color:var(--muted);margin:0}.sub{color:var(--muted);font-size:13px;margin-top:8px}
+    .grid{display:grid;gap:14px}.g5{grid-template-columns:repeat(5,1fr)}.g4{grid-template-columns:repeat(4,1fr)}.g2{grid-template-columns:repeat(2,1fr)}.section{margin-top:16px}
+    .panel,.metric{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:15px}.metric{display:flex;flex-direction:column;gap:6px;min-height:96px}.metric b{font-size:24px}.metric span,.metric small{color:var(--muted)}
+    .up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--muted)}.badge{display:inline-flex;border:1px solid var(--line);border-radius:6px;padding:5px 9px;color:var(--muted);font-size:12px;margin-right:8px}
+    table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted)}.table-wrap{overflow:auto}
+    canvas{width:100%!important;height:340px!important}.audit{font-size:12px;color:var(--muted);line-height:1.7}a{color:#8bb7ff}@media(max-width:900px){.g5,.g4,.g2{grid-template-columns:1fr}.wrap{padding:12px}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <section class="hero">
+    <div><span class="badge">earnings_catalyst_calendar</span><span class="badge">Prompt: 已加载</span><span class="badge">目标: 光伏设备</span></div>
+    <h1>财报与催化日历</h1>
+    <p class="sub">该页面已从提示词层上线到可运行 Pipeline。数据底座使用 Sina 指数、同花顺行业/资金、XTick 主数据探测；高阶字段缺失时按审计规则降级，不编造。</p>
+  </section>
+  <section class="grid g5 section"><div class='metric'><span>上证指数</span><b class='down'>-2.03%</b><small>2026-07-02 15:30:39</small></div><div class='metric'><span>深证成指</span><b class='down'>-3.85%</b><small>2026-07-02 15:00:03</small></div><div class='metric'><span>创业板指</span><b class='down'>-5.71%</b><small>2026-07-02 15:00:03</small></div><div class='metric'><span>科创50</span><b class='down'>-7.70%</b><small>2026-07-02 15:35:38</small></div><div class='metric'><span>北证50</span><b class='up'>+0.10%</b><small>2026-07-02 15:30:00</small></div></section>
+  <section class="grid g4 section">
+    <div class="metric"><span>行业宽度</span><b>0.0%</b><small>按同花顺行业上涨/下跌家数合计</small></div>
+    <div class="metric"><span>行业净流合计</span><b class="flat">+0.00 亿</b><small>同花顺行业主力净流入代理口径</small></div>
+    <div class="metric"><span>行业覆盖</span><b>0</b><small>行业样本数</small></div>
+    <div class="metric"><span>XTick 指数主数据</span><b>595</b><small>stockinfo(index) 探测</small></div>
+  </section>
+  <section class="grid g4 section"><section class='panel'><h2>财报窗口</h2><p>按当前月到未来五个月跟踪中报/三季报预告、业绩快报、订单公告和政策会议。</p></section><section class='panel'><h2>行业催化</h2><p>优先跟踪资金与涨幅同步的行业：数据缺失。</p></section><section class='panel'><h2>公告接入</h2><p>CNINFO、交易所公告、Equal Data 事件接口尚未全部上线时，具体公告项标记为数据缺失。</p></section><section class='panel'><h2>风险节点</h2><p>解禁、减持、监管问询和业绩不及预期是日历中的硬风险项。</p></section></section>
+  <section class="grid g2 section">
+    <div class="panel"><h2>涨幅行业 Top10</h2><canvas id="industryChart"></canvas></div>
+    <div class="panel"><h2>资金流向 Top/Bottom</h2><canvas id="flowChart"></canvas></div>
+  </section>
+  <section class="grid g2 section">
+    <div class="panel"><h2>行业涨幅表</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>行业</th><th>涨跌幅</th><th>净流入</th><th>涨/跌家数</th><th>领涨股</th></tr></thead><tbody><tr><td colspan='6'>数据缺失</td></tr></tbody></table></div></div>
+    <div class="panel"><h2>资金流向表</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>行业</th><th>涨跌幅</th><th>净流入</th><th>涨/跌家数</th><th>领涨股</th></tr></thead><tbody><tr><td colspan='6'>数据缺失</td></tr></tbody></table></div></div>
+  </section>
+  <section class="panel section"><h2>数据来源与审计</h2><div class="audit">
+    <div>生成时间：2026-07-02 16:41:48；抓取时间：2026-07-02T16:41:42+08:00</div>
+    <div>Prompt 文件：skill\references\html_prompts\11_earnings_catalyst_calendar.md</div>
+    <div>Provider：Sina 指数实时行情；同花顺行业行情/净流入/涨跌家数；XTick stockinfo(index) 探测。</div>
+    <div>缺失字段：估值、财报、公告、北向、ETF 份额、全球行情、个股事件等字段按页面功能标记为待接入或数据缺失。</div>
+    <div>错误记录：THS industry failed: HTTPStatusError: Client error &#x27;401 Unauthorized&#x27; for url &#x27;https://q.10jqka.com.cn/thshy/index/field/199112/order/desc/page/2/ajax/1/&#x27;
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401</div>
+    <div>免责声明：基于 AI 分析 + 联网公开信息，仅供研究参考，不构成投资建议。投资有风险，入市需谨慎。</div>
+  </div></section>
+</main>
+<script>
+const text='#8b949e'; Chart.defaults.color=text; Chart.defaults.borderColor='rgba(139,148,158,.25)';
+const inds=[];
+const flows=[];
+new Chart(document.getElementById('industryChart'),{type:'bar',data:{labels:inds.map(x=>x.name),datasets:[{label:'涨跌幅%',data:inds.map(x=>x.pct_chg),backgroundColor:inds.map(x=>x.pct_chg>=0?'rgba(248,81,73,.75)':'rgba(63,185,80,.75)')}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+new Chart(document.getElementById('flowChart'),{type:'bar',data:{labels:flows.map(x=>x.name),datasets:[{label:'净流入(亿)',data:flows.map(x=>x.net_inflow_yi),backgroundColor:flows.map(x=>x.net_inflow_yi>=0?'rgba(248,81,73,.75)':'rgba(63,185,80,.75)')}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+</script>
+<script type="application/json" id="index-data">[{&quot;provider&quot;: &quot;sina&quot;, &quot;code&quot;: &quot;sh000001&quot;, &quot;name&quot;: &quot;上证指数&quot;, &quot;current&quot;: 4028.9038, &quot;prev_close&quot;: 4112.4453, &quot;pct_chg&quot;: -2.0314, &quot;open&quot;: 4054.0857, &quot;high&quot;: 4093.6777, &quot;low&quot;: 4019.2147, &quot;amount_yuan&quot;: 1577183734747.0, &quot;quote_time&quot;: &quot;2026-07-02 15:30:39&quot;}, {&quot;provider&quot;: &quot;sina&quot;, &quot;code&quot;: &quot;sz399001&quot;, &quot;name&quot;: &quot;深证成指&quot;, &quot;current&quot;: 15498.811, &quot;prev_close&quot;: 16119.168, &quot;pct_chg&quot;: -3.8486, &quot;open&quot;: 15729.923, &quot;high&quot;: 15886.698, &quot;low&quot;: 15453.521, &quot;amount_yuan&quot;: 1873351357004.433, &quot;quote_time&quot;: &quot;2026-07-02 15:00:03&quot;}, {&quot;provider&quot;: &quot;sina&quot;, &quot;code&quot;: &quot;sz399006&quot;, &quot;name&quot;: &quot;创业板指&quot;, &quot;current&quot;: 4017.273, &quot;prev_close&quot;: 4260.721, &quot;pct_chg&quot;: -5.7138, &quot;open&quot;: 4135.342, &quot;high&quot;: 4168.873, &quot;low&quot;: 3999.567, &quot;amount_yuan&quot;: 890373241547.92, &quot;quote_time&quot;: &quot;2026-07-02 15:00:03&quot;}, {&quot;provider&quot;: &quot;sina&quot;, &quot;code&quot;: &quot;sh000688&quot;, &quot;name&quot;: &quot;科创50&quot;, &quot;current&quot;: 1987.291, &quot;prev_close&quot;: 2153.0431, &quot;pct_chg&quot;: -7.6985, &quot;open&quot;: 2059.898, &quot;high&quot;: 2105.2909, &quot;low&quot;: 1978.3199, &quot;amount_yuan&quot;: 214952503503.0, &quot;quote_time&quot;: &quot;2026-07-02 15:35:38&quot;}, {&quot;provider&quot;: &quot;sina&quot;, &quot;code&quot;: &quot;bj899050&quot;, &quot;name&quot;: &quot;北证50&quot;, &quot;current&quot;: 1266.218, &quot;prev_close&quot;: 1264.937, &quot;pct_chg&quot;: 0.1013, &quot;open&quot;: 1244.513, &quot;high&quot;: 1307.471, &quot;low&quot;: 1241.889, &quot;amount_yuan&quot;: 23616124099.0, &quot;quote_time&quot;: &quot;2026-07-02 15:30:00&quot;}]</script>
+</body>
+</html>

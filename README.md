@@ -23,6 +23,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8787 --reload
 - `skill/references/agent_team.md`：多智能体投研角色、辩论流程与评分规则。
 - `skill/references/html_prompt_library.md`：HTML 功能提示词索引，指向 Skill 内置提示词文件。
 - `skill/references/html_prompts/`：安装后可独立使用的 HTML 页面长提示词。
+- `skill/references/report_data_matrix.md`：每个 HTML 页面需要的数据、主渠道、备用渠道和缺口矩阵。
 - `docs/Prompt/HTMLFunctionPrompts/`：每个 HTML 页面功能一份独立长提示词 md 文件。
 - `docs/Prompt/FunctionPrompt.ipynb`：原始 notebook 提示词模板，保留作为对照来源。
 
@@ -75,9 +76,23 @@ $env:PYTHONUTF8='1'
 python C:\Users\74142\.codex\skills\.system\skill-creator\scripts\quick_validate.py skill
 ```
 
-## 已设计扩展报告类型
+## 已上线扩展报告类型
 
-提示词库已补充：板块资金轮动、聪明资金攻击面、板块估值诊股、趋势共振、自选股终端、指数/ETF 监控、流动性仪表盘、财报催化日历、单股事件风险、产业链图谱、海外映射等功能。当前后端仍需继续扩展 `Pipeline` 才能一键运行这些新类型。
+提示词库已补充并接入后端 `Pipeline`：板块资金轮动、聪明资金攻击面、板块估值诊股、趋势共振、自选股终端、指数/ETF 监控、流动性仪表盘、财报催化日历、单股事件风险、产业链图谱、海外映射等功能。CLI、FastAPI 和前端按钮均可直接生成这些 HTML 页面。
+
+新增可运行 `report_type`：
+
+- `sector_flow_rotation`
+- `smart_money_clusters`
+- `sector_valuation_diagnosis`
+- `trend_resonance`
+- `watchlist_terminal`
+- `index_etf_monitor`
+- `liquidity_dashboard`
+- `earnings_catalyst_calendar`
+- `single_stock_event_risk`
+- `industry_chain_map`
+- `global_mapping`
 
 ## 可选环境变量
 
@@ -98,17 +113,55 @@ python scripts\probe_data_sources.py --samples
 当前纳入的渠道：
 
 - XTick：本地目录 `xtick/`，配置文件 `xtick/scripts/Config.py`，优先读取 `XTICK_TOKEN`。
-- Sina：指数实时行情兜底。
-- 同花顺：行业涨跌幅、行业成交额、行业净流入、行业上涨/下跌家数。
-- Equal Data：通过 `EQUAL_DATA_API_KEY` 预留，适合公告、机构、龙虎榜、解禁、增减持等事件源。
+- Sina：A 股指数、港美/全球/汇率/商品行情片段，以及 A 股资产负债表、利润表、现金流量表三表摘要。
+- 同花顺：行业涨跌幅、行业成交额、行业净流入、行业上涨/下跌家数、行业详情页成分股备用。
+- Eastmoney：全 A 行情、行业/概念排行、ETF 排行、板块代码搜索和成分股；另接入 datacenter 公共兜底，覆盖龙虎榜、机构席位、两融、北向成交、限售解禁、高管增减持、基金/QFII/社保/券商/保险/信托持仓；`clist` 和 datacenter 均有本地缓存。
+- 交易所官方：SSE/SZSE 融资融券汇总兜底，SZSE 会自动回退到最近已发布交易日。
+- CNINFO：公告搜索，行业关键词为空时自动回退到头部成分股公告。
+- Tushare：预留 direct HTTP client，配置 `TUSHARE_TOKEN` 后可继续接入日线、财务、披露日历、质押、估值分位、ETF 份额等接口。
+- Equal Data：通过 `EQUAL_DATA_API_KEY` 预留，适合公告、机构、龙虎榜、解禁、增减持、诉讼质押、收入结构等事件源。
 - 搜索链：Tavily -> Serper -> SerpAPI -> Brave -> SearxNG。
 
 新增数据源路由说明见：
 
 - `skill/references/provider_registry.md`
 - `skill/references/data_sources.md`
+- `skill/references/report_data_matrix.md`
 
 注意：不要提交 Token。`.env` 和 `xtick/scripts/Config.py` 已在 `.gitignore` 中忽略。
+
+### 2026-07-02 数据源补强
+
+本轮补强把“页面需要的数据”拆到字段级，详见 `skill/references/report_data_matrix.md`。建议每次扩展或排查空页面时先运行：
+
+```powershell
+$env:PYTHONUTF8='1'
+python scripts\probe_data_sources.py --samples
+python scripts\generate_once.py --report smart_money_clusters --sector 光伏设备
+python scripts\generate_once.py --report global_mapping --sector 光伏设备
+```
+
+## 自定义大模型
+
+多智能体分析支持 OpenAI-compatible 模型服务。用户指定模型时优先使用用户传入配置；未指定时，脚本和 FastAPI 使用 `.env` 中的 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`；仍未配置时使用本地规则智能体，保证离线可运行。本地无鉴权模型可以不填 `OPENAI_API_KEY`，只要 `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 可用即可。
+
+CLI 示例：
+
+```powershell
+python scripts\generate_once.py --report market_replay `
+  --llm-base-url https://api.openai.com/v1 `
+  --llm-api-key YOUR_KEY `
+  --llm-model gpt-4.1-mini
+```
+
+FastAPI 示例（推荐用请求头传 key）：
+
+```text
+POST /api/reports/generate?report_type=market_replay&llm_base_url=https://api.openai.com/v1&llm_model=gpt-4.1-mini
+X-LLM-API-Key: YOUR_KEY
+```
+
+安全约束：API key 只用于当次请求或 `.env` 配置，不会写入生成的 HTML、返回 JSON 或同步到安装目录文档中。兼容 query 参数 `llm_api_key`，但不推荐用于生产。
 
 ## Skill 安装目录同步
 

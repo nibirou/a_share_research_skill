@@ -5,17 +5,27 @@ import asyncio
 import json
 import math
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic_settings import BaseSettings
+
+from backend.app.expanded_reports import EXPANDED_REPORT_IDS, render_expanded_report
+from backend.app.source_registry import (
+    CninfoClient,
+    EastmoneyClient,
+    SinaFinanceClient,
+    XTickClient,
+    retrieved_at,
+)
 
 
 # =========================
@@ -56,7 +66,23 @@ settings = Settings()
 # =========================
 
 Impact = Literal["利多", "利空", "中性"]
-ReportType = Literal["market_replay", "quant_factor", "sector_stock", "agent_debate"]
+ReportType = Literal[
+    "market_replay",
+    "quant_factor",
+    "sector_stock",
+    "agent_debate",
+    "sector_flow_rotation",
+    "smart_money_clusters",
+    "sector_valuation_diagnosis",
+    "trend_resonance",
+    "watchlist_terminal",
+    "index_etf_monitor",
+    "liquidity_dashboard",
+    "earnings_catalyst_calendar",
+    "single_stock_event_risk",
+    "industry_chain_map",
+    "global_mapping",
+]
 
 
 @dataclass
@@ -158,6 +184,46 @@ class AgentFinding:
     risks: list[str] = field(default_factory=list)
 
 
+@dataclass
+class LLMConfig:
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+
+    @classmethod
+    def from_settings(cls) -> "LLMConfig":
+        return cls(settings.openai_base_url, settings.openai_api_key, settings.openai_model)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.model and self.base_url)
+
+    @property
+    def chat_completions_url(self) -> str:
+        base = self.base_url.rstrip("/")
+        return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+    def public_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "base_url": self.base_url if self.enabled else "",
+            "model": self.model if self.enabled else "",
+            "api_key_set": bool(self.api_key),
+        }
+
+
+def resolve_llm_config(
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+) -> LLMConfig:
+    return LLMConfig(
+        base_url=(base_url or settings.openai_base_url or "").strip(),
+        api_key=(api_key or settings.openai_api_key or "").strip(),
+        model=(model or settings.openai_model or "").strip(),
+    )
+
+
 # =========================
 # Utilities
 # =========================
@@ -193,8 +259,28 @@ def clamp(x: float, lo: float = 0, hi: float = 100) -> float:
     return max(lo, min(hi, float(x)))
 
 
+def num(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, "", "-", "--"):
+            return default
+        return float(str(value).replace(",", "").replace("%", "").strip())
+    except Exception:
+        return default
+
+
+def code_with_suffix(code: str) -> str:
+    symbol = re.sub(r"\D", "", str(code))[:6]
+    if symbol.startswith(("6", "5")):
+        return f"{symbol}.SH"
+    if symbol.startswith(("0", "2", "3")):
+        return f"{symbol}.SZ"
+    if symbol.startswith(("4", "8", "9")):
+        return f"{symbol}.BJ"
+    return symbol
+
+
 def tag(label: str) -> str:
-    colors = {"超预期":"red","符合预期":"orange","不及预期":"green","利多":"red","利空":"green","中性":"blue","冰点":"blue","低迷":"green","活跃":"orange","沸点":"red","背离":"red","共振":"blue"}
+    colors = {"超预期":"red","符合预期":"orange","不及预期":"green","利多":"red","利空":"green","中性":"blue","冰点":"blue","低迷":"green","活跃":"orange","沸点":"red","背离":"red","共振":"blue","首选":"red","次选":"orange","观察":"blue"}
     return f"<span class='tag {colors.get(label, 'gray')}'>{escape(label)}</span>"
 
 
@@ -257,6 +343,355 @@ class DataHub:
         )
 
     async def sector_stock_snapshot(self, sector: str) -> SectorStockSnapshot:
+        try:
+            return await self._live_sector_stock_snapshot(sector)
+        except Exception as exc:
+            return self._sector_stock_fallback(sector, exc)
+
+    async def _live_sector_stock_snapshot(self, sector: str) -> SectorStockSnapshot:
+        east = EastmoneyClient()
+        requested = (sector or "全市场").strip()
+        full_market_aliases = {"", "全市场", "全市场扫描", "市场", "A股", "a股", "全部"}
+
+        industry_boards, concept_boards = await asyncio.gather(
+            east.industry_rank(160),
+            east.concept_rank(220),
+        )
+        all_boards = industry_boards + concept_boards
+
+        ranked_boards = self._rank_market_boards(all_boards)
+        selected = ranked_boards[0] if ranked_boards else {}
+        board_code = str(selected.get("code", "")) if selected else ""
+        constituents: list[dict[str, Any]] = []
+
+        if requested not in full_market_aliases:
+            board_code, constituents = await east.board_constituents_by_name(requested, 240)
+            selected = self._match_board(all_boards, board_code, requested) or {
+                "name": requested,
+                "code": board_code,
+                "kind": "custom",
+                "pct_chg": 0,
+                "main_net_inflow_yi": 0,
+                "main_net_pct": 0,
+                "leader": "",
+                "leader_pct_chg": 0,
+                "quote_time": retrieved_at(),
+            }
+
+        if not constituents and board_code:
+            constituents = await east.board_constituents(board_code, 240)
+
+        if not constituents:
+            constituents = await east.a_spot(100)
+            selected = {
+                "name": requested if requested not in full_market_aliases else "全市场强势股",
+                "code": "",
+                "kind": "a_share",
+                "pct_chg": 0,
+                "main_net_inflow_yi": 0,
+                "main_net_pct": 0,
+                "leader": "",
+                "leader_pct_chg": 0,
+                "quote_time": retrieved_at(),
+            }
+
+        constituents = self._dedupe_constituents(constituents)
+        constituents.sort(
+            key=lambda x: (
+                num(x.get("main_net_inflow_yi")),
+                num(x.get("amount_yi")),
+                num(x.get("pct_chg")),
+            ),
+            reverse=True,
+        )
+
+        flow_windows = await self._fund_flow_windows(constituents)
+        top_for_detail = constituents[: min(10, len(constituents))]
+        finance_map, announcement_map = await asyncio.gather(
+            self._sina_finance_snapshots(top_for_detail[:8]),
+            self._cninfo_announcements(top_for_detail),
+        )
+
+        target_name = str(selected.get("name") or requested or "全市场强势股")
+        stocks: list[StockFlow] = []
+        flow_missing = 0
+        for row in constituents:
+            code = str(row.get("code") or "")[:6]
+            name = str(row.get("name") or "")
+            float_mv = round(num(row.get("float_mv_yi")) or num(row.get("total_mv_yi")), 2)
+            windows = flow_windows.get(code) or {}
+            flow_3d = windows.get("flow_3d")
+            flow_5d = windows.get("flow_5d")
+            flow_20d = windows.get("flow_20d")
+            if flow_3d is None:
+                flow_3d = self._eastmoney_one_day_proxy(row)
+                flow_missing += 1
+
+            finance = finance_map.get(code, [])
+            anns = announcement_map.get(code, [])
+            stocks.append(
+                StockFlow(
+                    code_with_suffix(code),
+                    name,
+                    float_mv,
+                    flow_3d,
+                    flow_5d,
+                    flow_20d,
+                    is_st=("ST" in name.upper()),
+                    fundamentals=self._fundamental_summary(row, finance, anns),
+                    industry_position=self._industry_position(target_name, row),
+                    concept_rating=self._concept_rating(row, flow_3d, flow_5d, flow_20d),
+                )
+            )
+
+        quote_time = str(selected.get("quote_time") or retrieved_at())
+        top_names = "、".join(x.get("name", "") for x in ranked_boards[:5] if x.get("name"))
+        title_prefix = f"全市场精选：{target_name}" if requested in full_market_aliases else target_name
+        events = [
+            MarketEvent(
+                f"全市场扫描锁定{target_name}",
+                "利多" if num(selected.get("pct_chg")) > 0 and num(selected.get("main_net_inflow_yi")) > 0 else "中性",
+                "已纳入页面",
+                "Eastmoney",
+                f"板块代码{board_code or '数据缺失'}；涨跌幅{num(selected.get('pct_chg')):.2f}%；主力净流{num(selected.get('main_net_inflow_yi')):.2f}亿；行情时间{quote_time}",
+            ),
+            MarketEvent(
+                "全市场候选板块池",
+                "中性",
+                "数据审计",
+                "Eastmoney",
+                f"候选池来自行业+概念排名，前列为：{top_names or '数据缺失'}",
+            ),
+            MarketEvent(
+                "资金口径说明",
+                "中性",
+                "数据口径",
+                "Eastmoney/XTick",
+                "优先用东财push2his近20个交易日主力净流入/流通市值计算3D、5D、20D；若东财失败再尝试XTick权限接口；仍缺失时才用东财最新主力净流/流通市值作1D代理。",
+            ),
+            MarketEvent(
+                "数据抓取时间",
+                "中性",
+                "数据审计",
+                "ProviderRegistry",
+                retrieved_at(),
+            ),
+        ]
+        if flow_missing:
+            events.append(
+                MarketEvent(
+                    f"{flow_missing}只个股缺少历史资金窗口",
+                    "中性",
+                    "降级处理",
+                    "DataAudit",
+                    "这些个股未取得东财push2his或XTick历史窗口，保留东财1D代理或缺失标记，资金评分置信度下降。",
+                )
+            )
+        for rows in announcement_map.values():
+            for ann in rows[:1]:
+                events.append(
+                    MarketEvent(
+                        str(ann.get("title") or "巨潮公告"),
+                        "中性",
+                        str(ann.get("type") or "公告核验"),
+                        "CNINFO",
+                        str(ann.get("name") or ann.get("code") or "重点成分股"),
+                        str(ann.get("url") or "") or None,
+                        str(ann.get("announcement_time") or "") or None,
+                    )
+                )
+                if len(events) >= 14:
+                    break
+            if len(events) >= 14:
+                break
+
+        return SectorStockSnapshot(today(), title_prefix, stocks, events)
+
+    def _choose_market_board(self, boards: list[dict[str, Any]]) -> dict[str, Any]:
+        ranked = self._rank_market_boards(boards)
+        return ranked[0] if ranked else (boards[0] if boards else {})
+
+    def _rank_market_boards(self, boards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        excluded = ("昨日", "ST", "转债", "B股", "融资融券", "沪股通", "深股通", "基金重仓", "预亏", "MSCI", "标准普尔")
+        candidates = [
+            x for x in boards
+            if str(x.get("code", "")).startswith("BK")
+            and x.get("name")
+            and not any(word in str(x.get("name", "")) for word in excluded)
+        ]
+        return sorted(candidates, key=self._board_score, reverse=True)
+
+    def _board_score(self, row: dict[str, Any]) -> float:
+        return (
+            num(row.get("pct_chg")) * 8
+            + num(row.get("main_net_inflow_yi")) * 0.35
+            + num(row.get("main_net_pct")) * 1.4
+            + num(row.get("leader_pct_chg")) * 0.8
+            + min(num(row.get("amount_yi")), 1000) / 120
+        )
+
+    def _match_board(self, boards: list[dict[str, Any]], code: str, name: str) -> dict[str, Any] | None:
+        if code:
+            hit = next((x for x in boards if str(x.get("code")) == code), None)
+            if hit:
+                return hit
+        return next((x for x in boards if str(x.get("name")) == name or name in str(x.get("name")) or str(x.get("name")) in name), None)
+
+    def _dedupe_constituents(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            code = str(row.get("code") or "")[:6]
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            out.append(row)
+        return out
+
+    async def _fund_flow_windows(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+        east = EastmoneyClient()
+        xtick = XTickClient()
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
+        semaphore = asyncio.Semaphore(2)
+
+        async def one(row: dict[str, Any]) -> tuple[str, dict[str, float] | None]:
+            code = str(row.get("code") or "")[:6]
+            float_mv = num(row.get("float_mv_yi")) or num(row.get("total_mv_yi"))
+            if not code or not float_mv:
+                return code, None
+            try:
+                async with semaphore:
+                    windows = await east.stock_fund_flow_windows(code, float_mv)
+                    await asyncio.sleep(0.18)
+                if windows:
+                    return code, windows
+            except Exception:
+                pass
+            if not xtick.enabled:
+                return code, None
+            try:
+                async with semaphore:
+                    data = await xtick.money_flow(code, start_date, end_date)
+                valid = sorted(
+                    [x for x in data if isinstance(x, dict) and x.get("time")],
+                    key=lambda x: num(x.get("time")),
+                )
+                if not valid:
+                    return code, None
+
+                def net_yi(item: dict[str, Any]) -> float:
+                    buy = num(item.get("buyMostAmount")) + num(item.get("buyBigAmount"))
+                    sell = num(item.get("sellMostAmount")) + num(item.get("sellBigAmount"))
+                    return round((buy - sell) / 100000000, 4)
+
+                nets = [net_yi(x) for x in valid]
+                windows = {
+                    f"flow_{days}d": round(sum(nets[-days:]) / float_mv * 100, 2)
+                    for days in (3, 5, 20)
+                    if len(nets) >= days
+                }
+                return code, windows
+            except Exception:
+                return code, None
+
+        results = await asyncio.gather(*(one(row) for row in rows), return_exceptions=True)
+        out: dict[str, dict[str, float]] = {}
+        for result in results:
+            if isinstance(result, Exception):
+                continue
+            code, windows = result
+            if code and windows:
+                out[code] = windows
+        return out
+
+    async def _sina_finance_snapshots(self, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        client = SinaFinanceClient()
+        semaphore = asyncio.Semaphore(4)
+
+        async def one(row: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            code = str(row.get("code") or "")[:6]
+            try:
+                async with semaphore:
+                    return code, await client.financial_snapshot(code, 1)
+            except Exception:
+                return code, []
+
+        pairs = await asyncio.gather(*(one(row) for row in rows), return_exceptions=True)
+        out: dict[str, list[dict[str, Any]]] = {}
+        for pair in pairs:
+            if isinstance(pair, Exception):
+                continue
+            code, data = pair
+            out[code] = data
+        return out
+
+    async def _cninfo_announcements(self, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        client = CninfoClient()
+        semaphore = asyncio.Semaphore(4)
+
+        async def one(row: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+            code = str(row.get("code") or "")[:6]
+            try:
+                async with semaphore:
+                    return code, await client.announcements(stock_code=code, days=30, limit=2)
+            except Exception:
+                return code, []
+
+        pairs = await asyncio.gather(*(one(row) for row in rows), return_exceptions=True)
+        out: dict[str, list[dict[str, Any]]] = {}
+        for pair in pairs:
+            if isinstance(pair, Exception):
+                continue
+            code, data = pair
+            out[code] = data
+        return out
+
+    def _eastmoney_one_day_proxy(self, row: dict[str, Any]) -> float | None:
+        float_mv = num(row.get("float_mv_yi")) or num(row.get("total_mv_yi"))
+        if not float_mv:
+            return None
+        return round(num(row.get("main_net_inflow_yi")) / float_mv * 100, 2)
+
+    def _fundamental_summary(self, row: dict[str, Any], finance: list[dict[str, Any]], anns: list[dict[str, Any]]) -> str:
+        pe = num(row.get("pe_dynamic"))
+        pb = num(row.get("pb"))
+        parts = [
+            f"涨跌幅{num(row.get('pct_chg')):.2f}%",
+            f"成交额{num(row.get('amount_yi')):.2f}亿",
+            f"PE(动){pe:.2f}" if pe > 0 else "PE(动)亏损/缺失",
+            f"PB{pb:.2f}" if pb > 0 else "PB数据缺失",
+        ]
+        if finance:
+            latest = finance[0]
+            report_date = str(latest.get("report_date") or "最新报告期")
+            parts.append(
+                f"{report_date}营收{num(latest.get('revenue_yi')):.2f}亿、归母净利{num(latest.get('net_profit_yi')):.2f}亿、经营现金流{num(latest.get('operating_cashflow_yi')):.2f}亿"
+            )
+        else:
+            parts.append("三表快照数据缺失")
+        if anns:
+            parts.append(f"近30日公告：{str(anns[0].get('title') or '')[:38]}")
+        else:
+            parts.append("近30日未检索到重点公告")
+        return "；".join(parts)
+
+    def _industry_position(self, sector: str, row: dict[str, Any]) -> str:
+        return (
+            f"{sector}成分股；流通市值{num(row.get('float_mv_yi')):.2f}亿，"
+            f"当日成交{num(row.get('amount_yi')):.2f}亿，换手率{num(row.get('turnover_rate')):.2f}%；"
+            "具体产业链环节需继续用主营收入结构和公告复核"
+        )
+
+    def _concept_rating(self, row: dict[str, Any], flow_3d: float | None, flow_5d: float | None, flow_20d: float | None) -> str:
+        pct = num(row.get("pct_chg"))
+        if all(x is not None and x > 0 for x in (flow_3d, flow_5d, flow_20d)) and pct > 0:
+            return "强"
+        if (flow_3d is not None and flow_3d > 0) or pct > 0:
+            return "中"
+        return "弱"
+
+    def _sector_stock_fallback(self, sector: str, exc: Exception) -> SectorStockSnapshot:
         raw = [
             ("000159.SZ","国际实业",4.81,None,None,None),("000821.SZ","ST京机",6.05,None,None,None),
             ("001269.SZ","欧晶科技",1.92,None,None,None),("002056.SZ","横店东磁",16.25,None,None,None),
@@ -271,8 +706,8 @@ class DataHub:
         ]
         stocks = [StockFlow(c,n,mv,f3,f5,f20,("ST" in n)) for c,n,mv,f3,f5,f20 in raw]
         return SectorStockSnapshot(today(), sector, stocks, [
-            MarketEvent(f"{sector}供需出清成为核心叙事", "利多", "正在定价", "Demo", "估值修复触发"),
-            MarketEvent("海外贸易壁垒与价格下行仍是风险", "利空", "未充分定价", "Demo", "压制盈利弹性"),
+            MarketEvent("联网数据源取数失败，已回退到本地样例结构", "中性", "低置信度", "Fallback", f"{type(exc).__name__}: {str(exc)[:180]}"),
+            MarketEvent("请优先检查东财/XTick/CNINFO网络连通性", "中性", "数据审计", "DataAudit", "当前页面仅用于模板预览，不应用于投资研究结论。"),
         ])
 
     async def _try_akshare_market(self) -> MarketSnapshot | None:
@@ -395,8 +830,26 @@ class SearchHub:
 # =========================
 
 class AgentTeam:
+    def __init__(self, llm: LLMConfig | None = None):
+        self.llm = llm or LLMConfig.from_settings()
+        self.last_llm_mode = "not_configured"
+        self.last_llm_error = ""
+
     async def run(self, context: dict) -> list[AgentFinding]:
-        # OPENAI_API_KEY 存在时可扩展为真实 LLM 协同；默认启用可解释规则智能体，保证离线可运行。
+        rule_findings = self._rule_findings(context)
+        if not self.llm.enabled:
+            self.last_llm_mode = "rule"
+            self.last_llm_error = ""
+            return rule_findings
+        llm_findings = await self._run_llm(context, rule_findings)
+        if llm_findings:
+            self.last_llm_mode = "llm"
+            self.last_llm_error = ""
+            return llm_findings
+        self.last_llm_mode = "rule_fallback"
+        return rule_findings
+
+    def _rule_findings(self, context: dict) -> list[AgentFinding]:
         return [
             self.macro(context),
             self.capital(context),
@@ -405,6 +858,59 @@ class AgentTeam:
             self.risk(context),
         ]
 
+    async def _run_llm(self, context: dict, rule_findings: list[AgentFinding]) -> list[AgentFinding]:
+        system_prompt = (
+            "You are an A-share multi-agent investment research coordinator. "
+            "Use only the provided context and rule findings. "
+            "Return strict JSON: an array of 5 objects, each with role, verdict, score, evidence, risks. "
+            "score must be 0-100. evidence and risks must be short string arrays. "
+            "Do not provide investment promises."
+        )
+        user_payload = {"context": context, "rule_findings": [asdict(x) for x in rule_findings]}
+        try:
+            headers = {"Content-Type": "application/json"}
+            if self.llm.api_key:
+                headers["Authorization"] = f"Bearer {self.llm.api_key}"
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    self.llm.chat_completions_url,
+                    headers=headers,
+                    json={
+                        "model": self.llm.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)[:24000]},
+                        ],
+                        "temperature": 0.2,
+                    },
+                )
+                r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+            return self._parse_llm_findings(content)
+        except Exception as exc:
+            self.last_llm_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+            return []
+
+    def _parse_llm_findings(self, content: str) -> list[AgentFinding]:
+        text = content.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        match = re.search(r"\[[\s\S]*\]", text)
+        data = json.loads(match.group(0) if match else text)
+        out: list[AgentFinding] = []
+        for item in data[:8]:
+            out.append(
+                AgentFinding(
+                    role=str(item.get("role", "LLM Analyst"))[:40],
+                    verdict=str(item.get("verdict", ""))[:240],
+                    score=clamp(float(item.get("score", 50))),
+                    evidence=[str(x)[:120] for x in (item.get("evidence") or [])[:5]],
+                    risks=[str(x)[:120] for x in (item.get("risks") or [])[:5]],
+                )
+            )
+        return out
+
     def macro(self, ctx: dict) -> AgentFinding:
         events = ctx.get("events") or ctx.get("market", {}).get("events") or ctx.get("quant", {}).get("events") or []
         fav = sum(1 for e in events if e.get("impact") == "利多")
@@ -412,21 +918,47 @@ class AgentTeam:
         return AgentFinding("宏观策略", "政策预期托底，但需要资金确认。", clamp(50 + 10*(fav-neg)), [f"利多{fav}条/利空{neg}条"], ["政策落地慢于预期"])
 
     def capital(self, ctx: dict) -> AgentFinding:
+        sector = ctx.get("sector", {})
+        stocks = sector.get("stocks") or []
+        if stocks:
+            valid = [x for x in stocks if x.get("flow_3d") is not None]
+            pos = len([x for x in valid if float(x.get("flow_3d") or 0) > 0])
+            avg = sum(float(x.get("flow_3d") or 0) for x in valid) / max(len(valid), 1)
+            verdict = f"{pos}/{len(stocks)}只个股3D资金为正，板块资金{'偏强' if avg > 0 else '分歧'}。"
+            return AgentFinding("资金流", verdict, clamp(50 + avg * 4 + pos), [f"3D均值{avg:.2f}%", f"样本{len(stocks)}只"], ["资金窗口不完整", "单日代理口径需复核"])
         idx = ctx.get("market", {}).get("indices", [])
         flow = sum(float(x.get("main_net_inflow", 0)) for x in idx)
         return AgentFinding("资金流", "指数涨但主力净流出，诱多背离需防。", clamp(50 + flow/20), [f"主力合计{flow:.2f}亿"], ["放量不延续"])
 
     def quant(self, ctx: dict) -> AgentFinding:
+        sector = ctx.get("sector", {})
+        stocks = sector.get("stocks") or []
+        if stocks:
+            valid = [x for x in stocks if x.get("flow_3d") is not None and x.get("flow_5d") is not None and x.get("flow_20d") is not None]
+            all_pos = len([x for x in valid if all(float(x.get(k) or 0) > 0 for k in ("flow_3d", "flow_5d", "flow_20d"))])
+            score = clamp(45 + all_pos * 3 + len(valid) / max(len(stocks), 1) * 20)
+            return AgentFinding("技术量化", f"{all_pos}只个股三周期全正，强弱分化需要用趋势继续确认。", score, [f"完整窗口{len(valid)}只"], ["强势股高波动", "资金指标滞后"])
         q = ctx.get("quant", {})
         c = float(q.get("composite", 50))
         return AgentFinding("技术量化", "综合因子冰点，反弹需右侧确认。", c, [f"综合因子{c}"], ["冰点钝化"])
 
     def industry(self, ctx: dict) -> AgentFinding:
+        sector = ctx.get("sector", {})
+        if sector:
+            theme = sector.get("sector", "目标板块")
+            stocks = sector.get("stocks") or []
+            return AgentFinding("行业轮动", f"{theme}是当前扫描出的重点主线，需验证产业逻辑和资金持续性。", 65, [f"成分股{len(stocks)}只"], ["题材强度可能快于基本面兑现"])
         leaders = ctx.get("market", {}).get("leaders", [])
         theme = leaders[0]["name"] if leaders else "核心主线"
         return AgentFinding("行业轮动", f"领涨集中于{theme}，主线比杂乱轮动更健康。", 65, ["领涨板块相似度较高"], ["单日高潮后分歧"])
 
     def risk(self, ctx: dict) -> AgentFinding:
+        sector = ctx.get("sector", {})
+        stocks = sector.get("stocks") or []
+        if stocks:
+            st_count = len([x for x in stocks if x.get("is_st")])
+            missing = len([x for x in stocks if None in (x.get("flow_3d"), x.get("flow_5d"), x.get("flow_20d"))])
+            return AgentFinding("风险控制", "重点防范强势主线退潮、公告风险和资金窗口缺失导致的排序偏差。", clamp(55 - st_count * 3 - missing), [f"ST/{st_count}只", f"资金缺口{missing}只"], ["高位补跌", "减持解禁", "业绩不及预期"])
         return AgentFinding("风险控制", "防范指数虚涨、资金外流、题材拥挤。", 35, ["风险前置"], ["高位题材退潮", "外盘扰动", "个股普跌"])
 
 
@@ -458,6 +990,18 @@ def quant_summary(q: QuantSnapshot) -> dict:
 def classify_stock(s: StockFlow) -> tuple[str, int, str]:
     if s.is_st:
         return "风险警示型", 25, "回避"
+    if s.flow_3d is not None and (s.flow_5d is None or s.flow_20d is None):
+        f3 = s.flow_3d
+        score = int(clamp(45 + f3 * 10, 20, 78))
+        if f3 > 2:
+            mode = "1D代理强流入型"
+        elif f3 > 0:
+            mode = "1D代理温和流入型"
+        elif f3 < -1:
+            mode = "1D代理流出型"
+        else:
+            mode = "1D代理均衡型"
+        return mode, score, "谨慎" if score >= 55 else "观望"
     if None in (s.flow_3d, s.flow_5d, s.flow_20d):
         return "数据缺失待验证", 45, "观望"
     f3, f5, f20 = s.flow_3d, s.flow_5d, s.flow_20d
@@ -544,6 +1088,9 @@ def render_quant(q: QuantSnapshot, findings: list[AgentFinding]) -> str:
 
 
 def render_sector(ss: SectorStockSnapshot, findings: list[AgentFinding]) -> str:
+    def fmt_pct(value: float | None) -> str:
+        return "-" if value is None else f"{value:.2f}%"
+
     rows = []
     for st in ss.stocks:
         mode, score, decision = classify_stock(st)
@@ -553,26 +1100,51 @@ def render_sector(ss: SectorStockSnapshot, findings: list[AgentFinding]) -> str:
     positive = len([r for r in rows if (r["stock"].flow_3d or 0) > 0])
     allpos = len([r for r in rows if all(v is not None and v > 0 for v in [r["stock"].flow_3d, r["stock"].flow_5d, r["stock"].flow_20d])])
     stage = "吸筹初期" if positive > 0 else "分歧期/数据待验证"
+    missing_windows = len([r for r in rows if None in (r["stock"].flow_3d, r["stock"].flow_5d, r["stock"].flow_20d)])
+    if missing_windows == len(rows) and rows:
+        funding_banner = "本次东财push2his与XTick历史资金窗口均未返回完整数据，已使用东财最新主力净流/流通市值作为1D代理，排序置信度降级。"
+        funding_audit = "东财最新主力净流/流通市值1D代理；东财push2his与XTick 3D/5D/20D历史窗口本次不可用。"
+    elif missing_windows:
+        funding_banner = "部分个股已使用东财push2his或XTick历史资金窗口，缺失个股使用东财主力净流/流通市值1D代理，并在审计中降级。"
+        funding_audit = "东财push2his近20个交易日主力净流入/流通市值；东财失败时尝试XTick；仍缺失时东财最新主力净流/流通市值作1D代理。"
+    else:
+        funding_banner = "已使用东财push2his或XTick近20个交易日资金窗口计算3D/5D/20D，东财实时行情用于交叉校验。"
+        funding_audit = "东财push2his近20个交易日主力净流入/流通市值，必要时用XTick历史资金流交叉校验。"
+    event_rows = "".join(
+        f"<tr><td><b>{escape(e.title)}</b><div class='sub'>{escape(e.relation)}</div></td>"
+        f"<td>{tag(e.impact)}</td><td>{escape(e.pricing)}</td><td>{escape(e.source)}</td>"
+        f"<td>{escape(e.published_at or '')}</td><td>{f'<a href={escape(e.url)!r} target=_blank>打开</a>' if e.url else '-'}</td></tr>"
+        for e in ss.events[:16]
+    ) or "<tr><td colspan='6'>近30日事件与公告数据缺失</td></tr>"
+    finding_cards = "".join(
+        f"<div class='card'><b>{escape(f.role)}</b><div class='num'>{round(f.score, 1)}</div><div class='sub'>{escape(f.verdict)}</div></div>"
+        for f in findings[:5]
+    )
     cards, table = "", ""
     for i, r in enumerate(rows, 1):
         s, mode, score, decision = r["stock"], r["mode"], r["score"], r["decision"]
         sttag = " " + tag("*ST/ST风险") if s.is_st else ""
-        cards += f"""<div class="stock {'best' if score>=70 and not s.is_st else ''}"><h2>排名{i} · {escape(s.name)}（{escape(s.code)}）· 流通市值{s.float_mv}亿 {sttag}</h2><div class="kv"><span class="pill">资金模式：{escape(mode)}</span><span class="pill">资金质量分：{score}/100</span><span class="pill">3日 {s.flow_3d if s.flow_3d is not None else '-'}</span><span class="pill">5日 {s.flow_5d if s.flow_5d is not None else '-'}</span><span class="pill">20日 {s.flow_20d if s.flow_20d is not None else '-'}</span></div><table><tbody><tr><td>▶ 资金判断</td><td>{'资金数据缺失，暂按低置信度处理；接入真实超资后自动重排。' if s.flow_3d is None else '三周期资金显示'+escape(mode)}</td></tr><tr><td>▶ 基本面亮点</td><td>{escape(s.fundamentals)}；光伏设备链看盈利修复、订单和出海。</td></tr><tr><td>▶ 产业链定位</td><td>{escape(s.industry_position)}；需用年报营收结构确认。</td></tr><tr><td>▶ 交叉概念关联</td><td>新能源 + 储能/逆变器/设备国产替代，评级：{escape(s.concept_rating)}</td></tr><tr><td>▶ 短期判断</td><td>{escape(decision)}：资金置信度{'不足' if s.flow_3d is None else '可跟踪'}。</td></tr><tr><td>▶ 半年预期</td><td>催化：业绩预告、订单、政策；风险：价格战、海外壁垒、减持解禁。</td></tr>{'<tr><td>⚠️ 特有风险</td><td>风险警示/退市风险，推荐池排除。</td></tr>' if s.is_st else ''}</tbody></table></div>"""
-        table += f"<tr><td>{i}</td><td>{escape(s.code)}</td><td>{escape(s.name)}</td><td>{escape(mode)}</td><td>{s.flow_3d if s.flow_3d is not None else '-'}</td><td>{s.flow_5d if s.flow_5d is not None else '-'}</td><td>{s.flow_20d if s.flow_20d is not None else '-'}</td><td>{score}</td><td>{escape(s.concept_rating)}</td><td>{escape(decision)}</td></tr>"
+        stock_missing = None in (s.flow_3d, s.flow_5d, s.flow_20d)
+        flow_note = "三周期资金显示" + escape(mode) if not stock_missing else "资金窗口不完整，使用可得窗口/代理口径降级排序。"
+        cards += f"""<div class="stock {'best' if score>=70 and not s.is_st else ''}"><h2>排名{i} · {escape(s.name)}（{escape(s.code)}）· 流通市值{s.float_mv}亿 {sttag}</h2><div class="kv"><span class="pill">资金模式：{escape(mode)}</span><span class="pill">资金质量分：{score}/100</span><span class="pill">3D {fmt_pct(s.flow_3d)}</span><span class="pill">5D {fmt_pct(s.flow_5d)}</span><span class="pill">20D {fmt_pct(s.flow_20d)}</span></div><table><tbody><tr><td>资金判断</td><td>{flow_note}</td></tr><tr><td>基本面亮点</td><td>{escape(s.fundamentals)}</td></tr><tr><td>产业链定位</td><td>{escape(s.industry_position)}</td></tr><tr><td>交叉概念关联</td><td>{escape(ss.sector)} + 当前强势主线/政策产业催化，评级：{escape(s.concept_rating)}</td></tr><tr><td>短期判断</td><td>{escape(decision)}：资金置信度{'不足' if stock_missing else '可跟踪'}，需结合分时成交和公告继续确认。</td></tr><tr><td>半年预期</td><td>重点跟踪财报披露、订单/价格/政策窗口和行业景气验证；风险在于高位拥挤、减持解禁、业绩兑现不及预期。</td></tr>{'<tr><td>特有风险</td><td>风险警示/退市风险，推荐池排除。</td></tr>' if s.is_st else ''}</tbody></table></div>"""
+        table += f"<tr><td>{i}</td><td>{escape(s.code)}</td><td>{escape(s.name)}</td><td>{escape(mode)}</td><td>{fmt_pct(s.flow_3d)}</td><td>{fmt_pct(s.flow_5d)}</td><td>{fmt_pct(s.flow_20d)}</td><td>{score}</td><td>{escape(s.concept_rating)}</td><td>{escape(decision)}</td></tr>"
     recs = [r for r in rows if not r["stock"].is_st][:5]
-    rec_html = "".join(f"<div class='stock {'best' if i==1 else ''}'><h2>推荐 #{i}：{escape(r['stock'].name)}（{escape(r['stock'].code)}）</h2><div class='kv'>{tag('首选' if i==1 else '次选' if i<=3 else '观察')}<span class='pill'>资金分 {r['score']}</span><span class='pill'>{escape(r['mode'])}</span></div><div class='sub'>资金面候选 + 新能源交叉主线 + 供需出清预期；真实资金缺失时仅作观察池。</div><table><tbody><tr><td>半年预期</td><td>看估值修复弹性；催化为业绩和订单；最大风险为价格战与贸易壁垒。</td></tr><tr><td>止损/止盈</td><td>止损看20日线或前低；止盈看前高与放量滞涨。</td></tr><tr><td>差异化</td><td>相对ST标的风险更低。</td></tr></tbody></table></div>" for i, r in enumerate(recs,1))
+    rec_html = "".join(f"<div class='stock {'best' if i==1 else ''}'><h2>推荐 #{i}：{escape(r['stock'].name)}（{escape(r['stock'].code)}）</h2><div class='kv'>{tag('首选' if i==1 else '次选' if i<=3 else '观察')}<span class='pill'>资金分 {r['score']}</span><span class='pill'>{escape(r['mode'])}</span><span class='pill'>概念评级 {escape(r['stock'].concept_rating)}</span></div><div class='sub'>资金强度、流动性和公告/财务可核验性优先；仅作为研究观察池，不构成买卖建议。</div><table><tbody><tr><td>投资逻辑</td><td>{escape(r['stock'].fundamentals)}</td></tr><tr><td>半年预期</td><td>看行业景气确认和资金持续性；催化为财报/订单/政策，最大风险为高位放量滞涨或公告风险。</td></tr><tr><td>止损/止盈参考</td><td>止损看20日线或前低；止盈看前高、异常放量与资金背离。</td></tr><tr><td>差异化</td><td>相对风险警示股和资金撤退股，具备更好的可跟踪性。</td></tr></tbody></table></div>" for i, r in enumerate(recs,1))
     labels = [r["stock"].name for r in rows]; values = [r["stock"].flow_3d or 0 for r in rows]
     html = head(f"{ss.sector}板块个股分析")
     html += f"""
-<div class="banner section"><h1>{escape(ss.sector)}板块资金全景</h1><div class="grid g4 section"><div class="card"><div class="num">{positive}/{len(rows)}</div><div class="mini">资金净流入家数</div></div><div class="card"><div class="num">{escape(leader)}</div><div class="mini">板块资金龙头</div></div><div class="card"><div class="num">{allpos}</div><div class="mini">三周期全正</div></div><div class="card"><div class="num">{escape(stage)}</div><div class="mini">阶段标签</div></div></div><div class="sub section">当前样例资金缺失，系统先生成低置信度观察版；接入真实数据后自动重排。</div></div>
+<div class="banner section"><h1>{escape(ss.sector)}板块资金全景</h1><div class="grid g4 section"><div class="card"><div class="num">{positive}/{len(rows)}</div><div class="mini">资金净流入家数</div></div><div class="card"><div class="num">{escape(leader)}</div><div class="mini">板块资金龙头</div></div><div class="card"><div class="num">{allpos}</div><div class="mini">三周期全正</div></div><div class="card"><div class="num">{escape(stage)}</div><div class="mini">阶段标签</div></div></div><div class="sub section">{escape(funding_banner)}</div></div>
 <div class="card section"><h2>个股资金排名柱状图</h2><div class="chart"><canvas id="stockFlow"></canvas></div></div>
+<div class="card section"><h2>联网事件、公告与口径</h2><table><thead><tr><th>事件/审计项</th><th>影响</th><th>定价/类型</th><th>来源</th><th>时间</th><th>链接</th></tr></thead><tbody>{event_rows}</tbody></table></div>
+<div class="grid g3 section">{finding_cards}</div>
 <div class="section"><h2>所有个股逐一深度分析</h2>{cards}</div>
 <div class="card section"><h2>资金模式分类汇总表</h2><table><thead><tr><th>排名</th><th>代码</th><th>名称</th><th>模式</th><th>3日</th><th>5日</th><th>20日</th><th>资金分</th><th>概念</th><th>判断</th></tr></thead><tbody>{table}</tbody></table></div>
-<div class="card section"><h2>板块半年预期路线图</h2><div class="timeline"><div class="node"><b>当月 · 行业价格数据</b> {tag('中性')}<div class="sub">验证硅料/组件价格是否企稳。</div></div><div class="node"><b>下月 · 业绩预告窗口</b> {tag('利多')}<div class="sub">筛选盈利率先修复个股。</div></div><div class="node"><b>3个月内 · 产能出清</b> {tag('中性')}<div class="sub">关注落后产能退出。</div></div></div></div>
+<div class="card section"><h2>板块半年预期路线图</h2><div class="timeline"><div class="node"><b>当月 · 资金持续性验证</b> {tag('中性')}<div class="sub">观察3D/5D窗口能否继续为正，以及龙头是否放量不滞涨。</div></div><div class="node"><b>下月 · 中报/业绩预告窗口</b> {tag('利多')}<div class="sub">优先筛选资金流入且业绩兑现度高的个股。</div></div><div class="node"><b>3个月内 · 行业数据和政策节点</b> {tag('中性')}<div class="sub">跟踪订单、价格、产能、监管和补贴政策是否验证主线逻辑。</div></div><div class="node"><b>6个月内 · 估值再平衡</b> {tag('中性')}<div class="sub">若资金退潮或基本面不兑现，强势板块可能转入高波动分化。</div></div></div></div>
 <div class="section"><h2>精选推荐 3-5 只</h2>{rec_html}</div>
-<div class="card risk section"><h2>风险汇总</h2><div class="grid g4"><div class="card"><b>价格战</b><div class="sub">盈利修复被降价抵消。</div></div><div class="card"><b>海外壁垒</b><div class="sub">关税与反规避风险。</div></div><div class="card"><b>ST风险</b><div class="sub">风险警示股排除推荐。</div></div><div class="card"><b>资金缺失</b><div class="sub">需接入真实超资重排。</div></div></div></div>
+<div class="card section"><h2>数据来源与口径说明</h2><table><tbody><tr><td>交易日/生成日</td><td>{escape(ss.trade_date)} / {escape(now_str())}</td></tr><tr><td>板块与成分股</td><td>东方财富行业/概念排名、板块成分股接口；全市场模式下自动选择综合强度最高主线。</td></tr><tr><td>资金口径</td><td>{escape(funding_audit)}</td></tr><tr><td>财务与公告</td><td>新浪财务三表快照用于重点股，巨潮资讯近30日公告用于事件核验。</td></tr><tr><td>缺失字段</td><td>{missing_windows}只个股资金窗口不完整；主营收入结构、估值历史分位、券商一致预期仍需专业数据源补齐。</td></tr><tr><td>置信度</td><td>{'中高' if missing_windows < max(1, len(rows)//4) else '中'}：行情与资金可得，基本面业务纯度仍需公告/年报继续验证。</td></tr></tbody></table></div>
+<div class="card risk section"><h2>风险汇总</h2><div class="grid g4"><div class="card"><b>主线退潮</b><div class="sub">单日强势板块若次日资金不延续，容易高波动回撤。</div></div><div class="card"><b>估值拥挤</b><div class="sub">高PE、高PB个股需要业绩兑现支撑。</div></div><div class="card"><b>公告风险</b><div class="sub">减持、解禁、监管问询和业绩变脸会改变排序。</div></div><div class="card"><b>口径差异</b><div class="sub">不同数据源资金定义不同，代理指标仅用于横向比较。</div></div></div></div>
 """
-    script = f"""<script>const text='#8b949e';Chart.defaults.color=text;const labels={j(labels)},data={j(values)};new Chart(document.getElementById('stockFlow'),{{type:'bar',data:{{labels,datasets:[{{label:'超资入场3D',data,backgroundColor:data.map(x=>x>=0?'rgba(248,81,73,.78)':'rgba(63,185,80,.78)')}}]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}}}}}});</script>"""
+    script = f"""<script>const text='#8b949e';Chart.defaults.color=text;const labels={j(labels)},data={j(values)};new Chart(document.getElementById('stockFlow'),{{type:'bar',data:{{labels,datasets:[{{label:'3D资金强度%',data,backgroundColor:data.map(x=>x>=0?'rgba(248,81,73,.78)':'rgba(63,185,80,.78)')}}]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}}}}}});</script>"""
     return html + foot(script)
 
 
@@ -600,11 +1172,18 @@ def render_agents(findings: list[AgentFinding]) -> str:
 # =========================
 
 class Pipeline:
-    def __init__(self):
+    def __init__(self, llm: LLMConfig | None = None):
+        self.llm = llm or LLMConfig.from_settings()
         self.data = DataHub()
         self.search = SearchHub()
-        self.agents = AgentTeam()
+        self.agents = AgentTeam(self.llm)
         settings.report_path.mkdir(parents=True, exist_ok=True)
+
+    def _llm_status(self) -> dict:
+        info = self.llm.public_dict()
+        info["mode"] = self.agents.last_llm_mode
+        info["error"] = self.agents.last_llm_error
+        return info
 
     async def generate(self, report_type: ReportType, sector: str = "光伏设备") -> dict:
         if report_type == "market_replay":
@@ -621,20 +1200,24 @@ class Pipeline:
             html, title = render_quant(q, f), "A股大盘量化因子分析"
         elif report_type == "sector_stock":
             ss = await self.data.sector_stock_snapshot(sector)
-            ev = await self.search.search([f"{sector} 行业 价格 供需 产能 近30天", f"{sector} 上市公司 公告 业绩 订单 定增 减持", f"{sector} 机构研报 评级 近1月"], 30, 5)
-            if ev: ss.events = ev
+            target = ss.sector or sector
+            ev = await self.search.search([f"{target} 行业 价格 供需 产能 近30天", f"{target} 上市公司 公告 业绩 订单 定增 减持", f"{target} 机构研报 评级 近1月"], 30, 5)
+            if ev:
+                ss.events.extend(ev)
             f = await self.agents.run({"sector": json.loads(j(ss)), "events": [asdict(e) for e in ss.events]})
-            html, title = render_sector(ss, f), f"{sector}板块个股分析"
+            html, title = render_sector(ss, f), f"{ss.sector}板块个股分析"
+        elif report_type in EXPANDED_REPORT_IDS:
+            html, title = await render_expanded_report(report_type, sector)
         else:
             m, q = await self.data.market_snapshot(), await self.data.quant_snapshot()
             f = await self.agents.run({"market": json.loads(j(m)), "quant": json.loads(j(q))})
             html, title = render_agents(f), "A股多智能体投研报告"
         fn = self._save(report_type, html)
-        return {"report_type": report_type, "filename": fn, "url": f"/reports/{fn}", "title": title, "generated_at": now_str()}
+        return {"report_type": report_type, "filename": fn, "url": f"/reports/{fn}", "title": title, "generated_at": now_str(), "llm": self._llm_status()}
 
     async def generate_all(self, sector: str = "光伏设备") -> list[dict]:
         out = []
-        for rt in ["market_replay", "quant_factor", "sector_stock", "agent_debate"]:
+        for rt in ["market_replay", "quant_factor", "sector_stock", *EXPANDED_REPORT_IDS, "agent_debate"]:
             out.append(await self.generate(rt, sector))
         return out
 
@@ -660,7 +1243,7 @@ app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
 async def index():
     reports = Pipeline().list_reports()
     cards = "".join(f"<a class='card' href='{r['url']}' target='_blank'><b>{r['filename']}</b><span>{r['mtime']}</span></a>" for r in reports[:30]) or "<div class='empty'>暂无报告，点击刷新全部。</div>"
-    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A股投研页面中心</title><style>body{{margin:0;background:#0d1117;color:#e6edf3;font-family:PingFang SC,Microsoft YaHei,Arial,sans-serif}}.wrap{{max-width:1200px;margin:auto;padding:24px}}.top{{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}}.btn{{background:#238636;color:#fff;border-radius:10px;padding:10px 14px;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:18px}}.card{{display:flex;flex-direction:column;gap:8px;color:#e6edf3;text-decoration:none;background:#161b22;border:1px solid #30363d;border-radius:16px;padding:16px}}span,p{{color:#8b949e}}</style></head><body><div class="wrap"><div class="top"><div><h1>A股投研 HTML 页面中心</h1><p>行情复盘｜量化因子｜板块个股｜多智能体投研</p></div><a class="btn" href="/api/reports/refresh-all">刷新全部页面</a></div><div class="grid">{cards}</div></div></body></html>"""
+    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A股投研页面中心</title><style>body{{margin:0;background:#0d1117;color:#e6edf3;font-family:PingFang SC,Microsoft YaHei,Arial,sans-serif}}.wrap{{max-width:1200px;margin:auto;padding:24px}}.top{{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}}.btn{{background:#238636;color:#fff;border-radius:10px;padding:10px 14px;text-decoration:none}}.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:18px}}.card{{display:flex;flex-direction:column;gap:8px;color:#e6edf3;text-decoration:none;background:#161b22;border:1px solid #30363d;border-radius:16px;padding:16px}}span,p{{color:#8b949e}}</style></head><body><div class="wrap"><div class="top"><div><h1>A股投研 HTML 页面中心</h1><p>行情复盘｜量化因子｜板块个股｜资金轮动｜聪明资金｜估值诊断｜趋势共振｜自选股｜指数ETF｜流动性｜催化日历｜事件风险｜产业链｜海外映射｜多智能体</p></div><a class="btn" href="/api/reports/refresh-all">刷新全部页面</a></div><div class="grid">{cards}</div></div></body></html>"""
 
 @app.get("/reports/{filename}")
 async def report(filename: str):
@@ -674,13 +1257,26 @@ async def list_reports():
     return Pipeline().list_reports()
 
 @app.post("/api/reports/generate")
-async def generate(report_type: ReportType, sector: str = Query("光伏设备")):
-    return await Pipeline().generate(report_type, sector)
+async def generate(
+    report_type: ReportType,
+    sector: str = Query("光伏设备"),
+    llm_base_url: str | None = Query(None),
+    llm_api_key: str | None = Query(None),
+    llm_model: str | None = Query(None),
+    x_llm_api_key: str | None = Header(None, alias="X-LLM-API-Key"),
+):
+    return await Pipeline(resolve_llm_config(llm_base_url, llm_api_key or x_llm_api_key, llm_model)).generate(report_type, sector)
 
 @app.get("/api/reports/refresh-all")
-async def refresh_all(sector: str = Query("光伏设备")):
-    return await Pipeline().generate_all(sector)
+async def refresh_all(
+    sector: str = Query("光伏设备"),
+    llm_base_url: str | None = Query(None),
+    llm_api_key: str | None = Query(None),
+    llm_model: str | None = Query(None),
+    x_llm_api_key: str | None = Header(None, alias="X-LLM-API-Key"),
+):
+    return await Pipeline(resolve_llm_config(llm_base_url, llm_api_key or x_llm_api_key, llm_model)).generate_all(sector)
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "provider": settings.data_provider, "report_dir": str(settings.report_path)}
+    return {"ok": True, "provider": settings.data_provider, "report_dir": str(settings.report_path), "default_llm": LLMConfig.from_settings().public_dict()}

@@ -30,6 +30,6 @@ Each file is a complete, standalone HTML report prompt with AI-autonomous data r
 
 1. Identify the report id from the user request.
 2. Read only the matching prompt file to avoid loading unrelated long prompts.
-3. Also read `skill/references/data_sources.md` when the task needs current data.
+3. Also read `skill/references/data_sources.md` and `skill/references/report_data_matrix.md` when the task needs current data.
 4. Also read `skill/references/agent_team.md` when the task asks for multi-agent research, debate, or risk review.
 5. Preserve the chosen prompt's HTML module order and output constraints unless the user explicitly asks to modify them.
